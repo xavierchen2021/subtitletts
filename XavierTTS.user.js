@@ -2,7 +2,7 @@
 // @name         XavierTTS - 字幕同声传译
 // @namespace    http://tampermonkey.net/
 // @version      0.1
-// @description  通过上传SRT文件，使用Web Speech API为视频添加同声传译语音，并可选择音色。
+// @description  通过上传SRT文件，使用Web Speech API为视频添加同声传译语音，并可选择音色。欢迎大家使用并提出宝贵意见。
 // @author       Xavier
 // @match        *://*/*
 // @grant        GM_addStyle
