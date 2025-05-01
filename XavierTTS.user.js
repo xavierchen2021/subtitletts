@@ -32,6 +32,7 @@
     let nextSubtitleIndexToPlay = -1; // 等待音频结束后需要播放的字幕索引
     let blockSeekedAutoPlay = false; // 临时阻止 seeked 事件自动播放视频
     let hasUserInteracted = false; // 用户是否已与页面交互
+    let voicesInitialized = false; // 音色列表是否已初始化
 
     // --- DOM 元素 ---
     let container = null;
@@ -165,30 +166,67 @@
      * 获取并过滤可用音色
      */
     function loadVoices() {
+        // 如果已初始化，则不再执行
+        if (voicesInitialized) {
+            console.log("音色已初始化，跳过加载。");
+            return;
+        }
+
         availableVoices = synth.getVoices().filter(voice => DEFAULT_VOICE_FILTER(voice.name));
         if (availableVoices.length > 0) {
-            voicesLoaded = true;
-            populateVoiceSelect();
-            // 尝试加载上次选择的音色
+            voicesLoaded = true; // 标记基础语音已加载
+            populateVoiceSelect(); // 填充下拉列表
+
+            let defaultVoiceSet = false;
+
+            // 1. 尝试加载上次选择的音色
             const savedVoiceName = GM_getValue('selectedVoiceName');
             if (savedVoiceName) {
                 const savedVoice = availableVoices.find(v => v.name === savedVoiceName);
                 if (savedVoice) {
                     selectedVoice = savedVoice;
                     voiceSelect.value = savedVoiceName;
+                    defaultVoiceSet = true;
+                    console.log("加载已保存音色:", selectedVoice.name);
                 }
             }
-            if (!selectedVoice && availableVoices.length > 0) {
-                selectedVoice = availableVoices[0]; // 默认选择第一个
+
+            // 2. 如果未设置默认音色，尝试查找第一个中文音色
+            if (!defaultVoiceSet) {
+                const chineseVoice = availableVoices.find(v => v.lang.toLowerCase().startsWith('zh'));
+                if (chineseVoice) {
+                    selectedVoice = chineseVoice;
+                    voiceSelect.value = selectedVoice.name;
+                    defaultVoiceSet = true;
+                    console.log("默认选择中文音色:", selectedVoice.name);
+                }
+            }
+
+            // 3. 如果仍未设置默认音色（无保存、无中文），选择列表第一个
+            if (!defaultVoiceSet && availableVoices.length > 0) {
+                selectedVoice = availableVoices[0];
                 voiceSelect.value = selectedVoice.name;
+                defaultVoiceSet = true;
+                console.log("默认选择第一个可用音色:", selectedVoice.name);
             }
-            console.log("音色加载完成:", availableVoices);
-            if (voiceLoadInterval) {
-                clearInterval(voiceLoadInterval);
-                voiceLoadInterval = null;
-            }
+
+            console.log("音色列表处理完成:", availableVoices);
+            voicesInitialized = true; // 标记为已初始化
+
+            // (移除 voiceLoadInterval 相关逻辑)
+            // if (voiceLoadInterval) {
+            //     clearInterval(voiceLoadInterval);
+            //     voiceLoadInterval = null;
+            // }
         } else {
-            console.log("等待音色加载...");
+            // 初始加载时可能为空，需要等待 voiceschanged 事件
+            console.log("首次尝试加载音色列表为空，等待 voiceschanged 事件...");
+            // 添加一次性的 voiceschanged 监听器
+            synth.addEventListener('voiceschanged', function handleVoicesChangedOnce() {
+                 console.log("voiceschanged 事件触发，尝试重新加载音色...");
+                 synth.removeEventListener('voiceschanged', handleVoicesChangedOnce); // 移除监听器
+                 loadVoices(); // 再次调用 loadVoices
+            }, { once: true }); // 使用 once 选项确保只触发一次
         }
     }
 
@@ -316,6 +354,15 @@
 
             lastSpokenIndex = index; // 标记为已播放
 
+            // --- 触发下一批预加载 ---
+            // 当播放到当前批次的第 PRELOAD_TRIGGER_INDEX 条时 (索引从0开始)
+            // 并且下一批的起始索引没有超出字幕总数
+            const nextBatchStartIndex = Math.floor(index / PRELOAD_COUNT) * PRELOAD_COUNT + PRELOAD_COUNT;
+            if (index % PRELOAD_COUNT === PRELOAD_TRIGGER_INDEX && nextBatchStartIndex < subtitles.length) {
+                 console.log(`播放到索引 ${index}，触发预加载下一批: 从 ${nextBatchStartIndex} 开始`);
+                 preloadVoices(nextBatchStartIndex, PRELOAD_COUNT);
+            }
+
             // --- 处理等待状态 ---
             if (isWaitingForAudio) {
                 console.log(`音频 ${index} 播放完毕，恢复视频并准备播放下一条 ${nextSubtitleIndexToPlay}`);
@@ -436,8 +483,8 @@
                             // 稍后重置标志位
                             setTimeout(() => { blockSeekedAutoPlay = false; }, 100); // 延迟时间应足够 seeked 事件触发
 
-                            // 不需要在这里预加载语音了，播放时动态处理
-                            // preloadVoices(0, PRELOAD_COUNT); // 移除
+                            // 初始预加载第一批语音
+                            preloadVoices(0, PRELOAD_COUNT);
                         } else {
                             console.log("仍在等待视频元素...");
                             // 可以添加超时逻辑
@@ -493,13 +540,41 @@
                 voiceCache = {}; // 清空旧缓存
                 lastSpokenIndex = -1; // 重置播放状态
                 synth.cancel(); // 取消当前语音
-                // preloadVoices(0, PRELOAD_COUNT); // 移除预加载
-                // 播放时会使用新音色动态创建
+                // 音色更改后，重新预加载第一批语音
+                preloadVoices(0, PRELOAD_COUNT);
             }
         } else {
             console.warn("选择的音色无效");
         }
     }
+
+    /**
+     * 处理音色搜索框输入
+     * @param {Event} event
+     */
+    function handleVoiceSearch(event) {
+        const searchTerm = event.target.value.toLowerCase().trim();
+        const options = voiceSelect.options;
+        let firstVisibleOption = null;
+
+        for (let i = 0; i < options.length; i++) {
+            const option = options[i];
+            const optionText = option.textContent.toLowerCase();
+            const matches = optionText.includes(searchTerm);
+            option.style.display = matches ? '' : 'none';
+            if (matches && !firstVisibleOption) {
+                firstVisibleOption = option;
+            }
+        }
+
+        // 可选：如果当前选中的选项被隐藏了，自动选中第一个可见的选项
+        // if (voiceSelect.selectedOptions.length > 0 && voiceSelect.selectedOptions[0].style.display === 'none' && firstVisibleOption) {
+        //     voiceSelect.value = firstVisibleOption.value;
+        //     // 注意：这里不应该触发 handleVoiceChange，只是更新显示
+        // }
+        // 简单起见，暂时不自动切换选中项
+    }
+
 
     /**
      * 处理视频时间更新
@@ -732,12 +807,33 @@
         showSubtitleLabel.appendChild(showSubtitleCheckbox);
         showSubtitleLabel.appendChild(document.createTextNode(' 显示字幕'));
 
-        // 音色选择下拉框
-        const voiceSelectLabel = document.createElement('label');
+        // --- 音色选择（带搜索） ---
+        const voiceSearchContainer = document.createElement('div');
+        voiceSearchContainer.style.marginLeft = '15px'; // 与其他控件对齐
+        voiceSearchContainer.style.display = 'inline-block'; // 使其水平排列
+
+        const voiceSearchLabel = document.createElement('label');
+        voiceSearchLabel.appendChild(document.createTextNode(' 音色: '));
+
+        const voiceSearchInput = document.createElement('input');
+        voiceSearchInput.type = 'text';
+        voiceSearchInput.placeholder = '搜索音色...';
+        voiceSearchInput.style.marginLeft = '5px';
+        voiceSearchInput.style.padding = '4px'; // 调整内边距
+        voiceSearchInput.style.border = '1px solid #ccc';
+        voiceSearchInput.style.borderRadius = '3px';
+        voiceSearchInput.addEventListener('input', handleVoiceSearch);
+
         voiceSelect = document.createElement('select');
+        voiceSelect.style.marginLeft = '5px';
+        voiceSelect.style.maxWidth = '200px'; // 限制最大宽度
         voiceSelect.addEventListener('change', handleVoiceChange);
-        voiceSelectLabel.appendChild(document.createTextNode(' 音色: '));
-        voiceSelectLabel.appendChild(voiceSelect);
+
+        voiceSearchContainer.appendChild(voiceSearchLabel);
+        voiceSearchContainer.appendChild(voiceSearchInput);
+        voiceSearchContainer.appendChild(voiceSelect);
+        // --- 音色选择结束 ---
+
 
         // 字幕显示区域
         subtitleDisplay = document.createElement('div');
@@ -747,7 +843,8 @@
         // 添加到容器
         container.appendChild(uploadButton);
         container.appendChild(showSubtitleLabel);
-        container.appendChild(voiceSelectLabel);
+        // container.appendChild(voiceSelectLabel); // 改为添加搜索容器
+        container.appendChild(voiceSearchContainer);
         container.appendChild(subtitleDisplay); // 将字幕显示区域添加到容器内部
 
         // 添加到页面
@@ -809,33 +906,13 @@
         createUI();
 
         // --- 处理 Web Speech API 音色加载 ---
-        // getVoices() 可能是异步的，需要监听 voiceschanged 事件或轮询
-        if (synth.onvoiceschanged !== undefined) {
-            synth.onvoiceschanged = loadVoices;
-        }
-        // 作为备用方案或初始加载尝试
+        // 尝试加载音色
+        // loadVoices 函数内部会处理 voiceschanged 事件（如果需要）
         loadVoices();
-        // 如果初始加载未成功，设置轮询
-        if (!voicesLoaded) {
-           voiceLoadInterval = setInterval(() => {
-                loadVoices();
-                if (voicesLoaded && voiceLoadInterval) {
-                    clearInterval(voiceLoadInterval);
-                    voiceLoadInterval = null;
-                }
-            }, 500); // 每 500ms 检查一次
-             // 设置超时停止轮询
-            setTimeout(() => {
-                if (voiceLoadInterval) {
-                    clearInterval(voiceLoadInterval);
-                    voiceLoadInterval = null;
-                    if (!voicesLoaded) {
-                        console.warn("音色加载超时。");
-                        alert("无法加载语音合成音色，请检查浏览器支持或刷新页面重试。");
-                    }
-                }
-            }, 10000); // 10秒超时
-        }
+
+        // (移除 onvoiceschanged 和 setInterval 逻辑)
+        // if (synth.onvoiceschanged !== undefined) { ... }
+        // if (!voicesLoaded) { ... }
 
 
         // 初始尝试查找视频元素
