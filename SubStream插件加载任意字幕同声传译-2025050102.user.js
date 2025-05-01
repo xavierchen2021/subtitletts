@@ -6,7 +6,7 @@
 // @version      2025050102
 // @description  配合 SubStream 插件实现任意视频的任意字幕的文字转语音，同声传译，魔改自 Sean2333 的 YouTube同声传译
 // @homepage     https://greasyfork.org/zh-CN/scripts/534579-substream%E6%8F%92%E4%BB%B6%E5%8A%A0%E8%BD%BD%E4%BB%BB%E6%84%8F%E5%AD%97%E5%B9%95%E5%90%8C%E5%A3%B0%E4%BC%A0%E8%AF%91
-// @author       Xavier
+// @author       Xavier111
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @license      MIT
